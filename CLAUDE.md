@@ -1,186 +1,325 @@
-# Project: Audio Plugin Analysis
+# Project: Audio Plugin Analysis and Clone
+
+## Target: the only line you edit
+
+```
+PLUGIN=/Library/Audio/Plug-Ins/VST3/uaudio_lexicon_224.vst3
+```
+
+Everything else is derived from this line. The tools (`render.py`) read it too.
+
+| Name | Meaning |
+|---|---|
+| `<bundle>` | the `PLUGIN=` path (`.vst3` or `.component`) |
+| `<exe>` | the Mach-O inside: `<bundle>/Contents/MacOS/<file>` (find it with `ls`) |
+| `<name>` | `<bundle>` file name without the extension, e.g. `uaudio_lexicon_224` |
+| `<slice>` | `analysis/slices/<name>-arm64` |
 
 ## Objective
 
-Analyse the audio plugin below with REA (which runs Ghidra headless) and with
-offline audio renders.
+Understand the plugin's audio processing completely, write a behavioural spec,
+and build an **independent C++ clone** that sounds measurably the same.
 
-Goal: understand its architecture and audio processing well enough to write a
-behavioural spec for an independent C++ implementation with comparable sound.
+1. **Measure** the original: renders plus static analysis (REA/Ghidra).
+2. **Specify**: `analysis/SPEC.md`, with enough detail to implement from.
+3. **Build** the clone in `clone/`.
+4. **Debug the clone against the original** with A/B renders until it is within tolerance.
 
+Principles:
 - Audio processing comes first. Ignore the UI unless it explains a parameter.
-- Original source code cannot be recovered. That is not the goal.
-- Describe findings as behaviour: signal flow, delay lengths, gains, filter
-  coefficients, modulation. Do not paste decompiled code into the spec or the
-  implementation.
-
-## Target
-
-- `<bundle>` = `/Library/Audio/Plug-Ins/VST3/uaudio_lexicon_224.vst3`
-- `<exe>` = `<bundle>/Contents/MacOS/uaudio_lexicon_224`
-- Version 1.4.16 (build 1508). UADx (native, CPU) version: see F-001.
-- The same plugin as AU: `/Library/Audio/Plug-Ins/Components/uaudio_lexicon_224.component`
-  (same audio as the VST3, see F-003).
-- macOS on Apple Silicon. Analyse the arm64 slice.
-- Findings about any other plugin do not apply here unless re-checked against
-  this exact binary.
+- Original source code cannot be recovered, and that is not the goal.
+- Describe behaviour: signal flow, delay lengths, gains, filter coefficients,
+  decay, modulation, nonlinearity, sample-rate handling. Never paste decompiled
+  code into the spec or the clone. Write the clone from `SPEC.md`.
 
 ## Session files: read these first, every session
 
-Everything you write goes under `analysis/` in this project. Do not use /tmp.
+Everything you write goes under `analysis/` or `clone/`. Do not use /tmp.
 
 | Path | Contents |
 |---|---|
-| `analysis/TARGET.md` | Executable path, version, SHA-256 of `<exe>` and of the slice, architectures, REA provider status |
-| `analysis/FINDINGS.md` | Numbered findings (F-001, F-002, ...): Confirmed / Hypothesis / Unknown |
+| `analysis/TARGET.md` | Bundle path, exe path, version, SHA-256 of `<exe>` and `<slice>`, architectures, protection status, REA status |
+| `analysis/FINDINGS.md` | Numbered findings (F-001, ...): Confirmed / Hypothesis / Unknown |
+| `analysis/COVERAGE.md` | One row per host parameter: measured / static / in spec / in clone / passes A/B |
+| `analysis/SPEC.md` | Behavioural spec for the clone (Phase C) |
 | `analysis/LOG.md` | One entry per session: what was done, exact errors, open questions, **Next step** |
 | `analysis/slices/` | Single-architecture slices |
-| `analysis/out/` | Saved tool output (pseudo-code, string lists, analysis JSON, plots) |
+| `analysis/out/` | Saved tool output (pseudo-code notes, string lists, analysis JSON, plots) |
 | `analysis/audio/renders/` | Rendered WAVs, each with a `.json` sidecar |
 | `analysis/tools/` | `render.py`, `analyze.py`: ready to use, see "Audio renders" |
+| `analysis/archive/<name>/` | Work on previous targets |
+| `clone/` | The C++ clone: source, CMake, build output in `clone/build/` |
 
-At the start of a session: read `TARGET.md`, then `FINDINGS.md`, then the last
-entry in `LOG.md`. Continue from its **Next step**.
-At the end of each step: update `FINDINGS.md` and append to `LOG.md`.
+At the start of a session:
+1. Do the **target check** (below).
+2. Read `TARGET.md`, `FINDINGS.md`, `COVERAGE.md`, then the last entry in `LOG.md`.
+3. Continue from its **Next step**.
+
+At the end of each step: update `FINDINGS.md` and `COVERAGE.md`, and append to `LOG.md`.
+
+### Target check (every session)
+
+- `TARGET.md` missing: run Phase 0.
+- `TARGET.md` names a different bundle than `PLUGIN=`: the user switched target.
+  Move `TARGET.md`, `FINDINGS.md`, `COVERAGE.md`, `SPEC.md`, `LOG.md`, `out/`,
+  `audio/renders/` and `slices/` into `analysis/archive/<old name>/`. Move
+  `clone/` to `analysis/archive/<old name>/clone/`. Then run Phase 0. Do not delete anything.
+- Same bundle: re-check only `shasum -a 256 "<exe>"`. If it differs from
+  `TARGET.md`, the plugin was updated. Stop and tell the user: old addresses and
+  findings may no longer apply.
 
 ## Rules
 
-- Never modify, patch, re-sign, move, or overwrite anything inside `<bundle>`
-  or the `.component`.
+- Never modify, patch, re-sign, move, or overwrite the installed plugin: `<bundle>`,
+  its AU/VST3/AAX siblings, or the vendor's content or data folders.
 - Write only inside this project directory.
-- Ask first before you: install anything, edit any config (opencode, REA,
-  shell, system), delete files outside `analysis/`, kill a process, or
-  analyse files outside the two plugin bundles.
-- Do not investigate license bypasses or disable protection mechanisms. The
-  bundle contains `Resources/__Pace_Eden` (PACE anti-tamper). Consequences:
-  - Never attach a debugger, Frida, gdb or rizin-debug to the plugin or to a
-    process that loaded it. Use static analysis and audio renders only.
-  - Static code may contain obfuscated regions. Record where in `LOG.md` and
-    move on; do not try to decrypt or unpack them.
+- Ask first before you: install or download anything (including JUCE or the VST3
+  SDK), edit any config (opencode, REA, shell, system, the plugin's own settings
+  files), delete files outside `analysis/` and `clone/`, kill a process, or
+  analyse files outside the target's bundles.
+- No licence bypass, ever. Do not investigate licensing, activation, or
+  copy-protection code, and do not decrypt, unpack or reverse encrypted
+  content or preset files. Measure their effect through renders.
+- **Protected targets.** Phase 0 records whether the plugin uses copy protection
+  or anti-tamper (PACE/iLok: `__Pace_Eden`, `libpacefusion`, DTCompiler
+  `com.paceap...`, licensing exports such as `_g_dwIL*`; or others). If it does:
+  - Never attach a debugger, Frida, gdb, lldb, rizin-debug or DTrace to the
+    plugin or to any process that loaded it. Static analysis and renders only.
+  - Protected or obfuscated code regions: record the address in `LOG.md` and move on.
+- **Unprotected targets.** Still no patching. Ask the user once before the first
+  dynamic session on the original plugin, and record the approval in `LOG.md`.
+- **Your own clone has no limits.** Debug it with lldb, sanitizers, logging,
+  probes, unit tests, or any instrumentation you need.
 - Never repeat a failing command or tool call unchanged. If two different
   approaches fail on the same problem, stop and report.
 
-## Step 0: Establish the target
+## Phase 0: Establish the target
 
-If `analysis/TARGET.md` exists, skip this step. Only re-check the SHA-256
-of `<exe>`. If it differs from `TARGET.md`, the plugin has been updated:
-stop and tell the user. Old addresses and findings no longer apply.
-
-Otherwise run these and record the results in `TARGET.md`. These are macOS
-(BSD/LLVM) tools: do not use GNU-only flags. Shell variables do not persist
-between commands, so write out full paths.
+Run these and record the results in `TARGET.md`, including the bundle path
+exactly as in `PLUGIN=`. These are macOS (BSD/LLVM) tools: do not use GNU-only
+flags. Shell variables do not persist between commands, so write out full,
+quoted paths.
 
 | Purpose | Command |
 |---|---|
-| Executable name, version | `plutil -p <bundle>/Contents/Info.plist` |
-| Bundle contents | `ls -la <bundle>/Contents/MacOS <bundle>/Contents/Resources` |
-| Plugin manifest (parameter IDs, program names) | `cat <bundle>/Contents/Resources/manifest.json` |
-| Architectures | `lipo -info <exe>` |
-| Hash | `shasum -a 256 <exe>` |
-| Linked libraries | `otool -arch arm64 -L <exe>` |
-| Exported symbols | `nm -arch arm64 -gU <exe>` (shows `_GetPluginFactory`; also `juce::` and `boost::` symbols) |
-| Signature (read-only) | `codesign -dv --verbose=2 <bundle> 2>&1` |
-| Make the slice | `lipo -thin arm64 <exe> -output analysis/slices/uaudio_lexicon_224-arm64` |
-| Slice hash | `shasum -a 256 analysis/slices/uaudio_lexicon_224-arm64` |
+| Executable name, version, compiler | `plutil -p "<bundle>/Contents/Info.plist"` |
+| Bundle contents | `ls -la "<bundle>/Contents" "<bundle>/Contents/MacOS" "<bundle>/Contents/Resources"` |
+| Manifests (class IDs, parameters, programs) | `cat` any `moduleinfo.json` / `manifest.json` / `.plist` in `Resources` |
+| Sibling formats | `ls /Library/Audio/Plug-Ins/Components /Library/Audio/Plug-Ins/VST3 \| grep -i "<name>"` |
+| Architectures | `lipo -info "<exe>"` |
+| Hash | `shasum -a 256 "<exe>"` |
+| Linked libraries | `otool -arch arm64 -L "<exe>"` |
+| Exported symbols | `nm -arch arm64 -gU "<exe>"` (count first: `\| wc -l`) |
+| Framework hints | `strings -a "<exe>" \| grep -m 20 -iE "juce\|steinberg\|iplug\|dpf"` |
+| Signature (read-only) | `codesign -dv --verbose=2 "<bundle>" 2>&1` |
+| Protection | from the above: PACE/iLok markers, few exports, encrypted resources. Record Yes/No and the evidence |
+| Make the slice | `lipo -thin arm64 "<exe>" -output "<slice>"` (if the exe is already arm64-only, `cp` it) |
+| Slice hash | `shasum -a 256 "<slice>"` |
+| Parameters | `.venv/bin/python analysis/tools/render.py params` -> creates the rows of `COVERAGE.md` |
 | REA providers | `rea doctor` |
 
-There is no `moduleinfo.json` in this bundle; use `manifest.json`.
+Large executables (50 MB or more) make Ghidra auto-analysis slow. Plan for that.
 
 `objdump` on your PATH is Apple's LLVM objdump. GNU objdump is at
-`/opt/homebrew/opt/binutils/bin/objdump` and has limited Mach-O/arm64
-support; prefer otool, LLVM objdump, or REA. Choose flags for the task;
-do not add `-i` by default.
+`/opt/homebrew/opt/binutils/bin/objdump` and has limited Mach-O/arm64 support.
+Prefer otool, LLVM objdump, or REA.
+
+## Phase A: Black-box measurement (renders)
+
+For a protected plugin, renders carry most of the work. Be systematic.
+
+1. **Baseline.** Render the defaults twice and `compare` them. This is the noise
+   floor: how much two identical renders differ. Every effect you report must be
+   clearly larger than this.
+2. **Deterministic mode.** If renders are not repeatable, find which parameters
+   cause it (usually modulation or random seeds): set them to minimum or off until
+   two renders null below -100 dB. Measure everything else in that mode, then
+   measure the modulation separately.
+3. **Per-parameter sweep**, one parameter at a time, everything else at default
+   (or in deterministic mode). For every row of `COVERAGE.md`:
+   - continuous: at least min / 25% / 50% / 75% / max (`raw:0`, `raw:0.25`, ...)
+   - stepped or enum: `--vary NAME=all`
+   - pick the signal for the effect: impulse (decay, EQ, delays), sine at
+     -30/-12/0 dBFS (gain, THD, compression curve), `mod` on a sine (LFO rate
+     and depth), sweep (frequency response), burst (envelope, attack/release)
+   - write the mapping as a table or formula: raw value -> display value -> measured value
+4. **Sample rate.** `--sr 44100,48000,96000`: delays fixed in ms keep their ms;
+   delays fixed in samples keep their sample count. Also check filter cutoffs and LFO rates.
+5. **Block size.** `--block 64,512,2048` should not change the output. If it does, record it.
+6. **Programs and presets.** Render each program; `changed_from_default` in the
+   sidecar shows what it sets. Set programs before other parameters (render.py does this).
+7. **Interactions.** After the single sweeps, test pairs that plausibly interact
+   (for example size × decay, or drive × output).
+
+## Phase B: Static analysis (REA / Ghidra)
+
+Use the code to explain what the renders show: structure, exact constants,
+delay tables, coefficient formulas, smoothing, denormal handling, oversampling.
+
+1. **Architecture map.** Start at `_GetPluginFactory` (VST3) or the AU factory
+   symbol from `Info.plist`. Find the processor and controller classes (class
+   IDs from the manifest). Search strings for RTTI names, framework names,
+   parameter names (from `COVERAGE.md`), and resource names. Follow them inward to the DSP.
+2. **Parameter flow.** For each parameter: where is it read, and what does it
+   change? Map ID -> name -> range -> reader -> effect -> curve.
+3. **Audio path.** Find where the sample rate and block size arrive (setup /
+   prepare), what is allocated there (buffer lengths = delay lines), and the
+   per-block process function: filters, delays, feedback, gain stages, modulators.
+4. **Constant tables.** Arrays of floats or ints near the DSP (delay lengths,
+   coefficients, LFO tables) are very valuable. Dump them with `read_bytes`,
+   decode them with a command, and save them to `analysis/out/`.
+
+## Phase C: Behavioural spec (`analysis/SPEC.md`)
+
+Write it so a developer who has never seen the plugin could implement it.
+Structure:
+
+1. Overview: block diagram (signal flow, mono/stereo, wet/dry topology), latency.
+2. One section per DSP block in signal order: purpose, inputs/outputs, the
+   algorithm in plain words or formulas, every constant with units and its
+   finding ID, and sample-rate behaviour.
+3. Parameter table: ID, name, range, default, taper/curve formula, smoothing
+   time, which blocks it controls.
+4. Programs: the parameter values each program sets.
+5. Open items: everything still Hypothesis or Unknown, and how it was approximated.
+
+Every spec statement cites a finding ID. If no finding exists, write the
+finding first.
+
+## Phase D: Build the clone (`clone/`)
+
+- Framework: ask the user on first entry (default suggestion: JUCE + CMake,
+  building VST3 and AU). Downloading a framework needs approval (see Rules).
+- Layout: `clone/CMakeLists.txt`, `clone/src/dsp/` (one class per SPEC block,
+  no framework dependency), `clone/src/plugin/` (wrapper), `clone/tests/`.
+- Use the same parameter names, ranges and defaults as the original, so that
+  `render.py --set` and `--vary` work unchanged on both.
+- Build: `cmake -S clone -B clone/build -DCMAKE_BUILD_TYPE=Release && cmake --build clone/build`.
+  Record the exact command and the output path in `LOG.md`.
+- Never install the clone into `/Library/Audio/Plug-Ins`. Render it from
+  `clone/build/...` with `--plugin` (use `--settle 0` if it loads instantly).
+- Unit-test each DSP block on its own (impulse response, gain, delay length)
+  before you test the whole plugin.
+
+## Phase E: Debug the clone against the original (A/B loop)
+
+Repeat until every `COVERAGE.md` row passes:
+
+1. Render the original and the clone with identical signal and settings
+   (`--name orig_X` / `--name clone_X`, same `--sr`, `--block`, `--signal`).
+2. `analyze.py compare orig.wav clone.wav`; also run `ir`, `peaks` or `mod`,
+   depending on the parameter.
+3. Find the **largest** deviation. Find its cause (by bisecting: bypass blocks
+   in the clone, add debug outputs, probe intermediate signals), fix one
+   thing, then rebuild and re-render.
+4. Record the result per row in `COVERAGE.md` and per session in `LOG.md`.
+
+Acceptance (default tolerances; tighten them if the noise floor allows):
+
+| Metric | Tolerance |
+|---|---|
+| Deterministic settings, if the original is deterministic | null below -60 dB, or explain why not |
+| T30 / EDT, broadband and per octave | ±5% |
+| Band levels per octave | ±0.5 dB |
+| Discrete early arrivals (`peaks`) | ±0.5 ms, ±1 dB |
+| Echo density, L/R correlation | within the original's run-to-run spread × 2 |
+| Modulation rate / depth | ±5% |
+| Static gain / THD at -30/-12/0 dBFS | ±0.2 dB / ±3 dB THD |
+| Parameter curves | every swept point within the tolerances above |
+| Sample rates 44.1 / 48 / 96 kHz | all pass |
+
+**Done** means every parameter row passes at all three sample rates, the
+programs pass, and `SPEC.md` has no open items left that are audible.
 
 ## REA and Ghidra
 
-Verified on this Mac, 2026-11-01. Ghidra 12.1.4 runs headless inside REA.
-
-Tool names below are bare (`open_binary`). opencode lists them as
-`rea_<name>`, Claude Code as `mcp__rea__<name>`. Use the exact name your tool
-list shows.
+Ghidra runs headless inside REA. Tool names below are bare (`open_binary`).
+opencode lists them as `rea_<name>`, Claude Code as `mcp__rea__<name>`. Use the
+exact name your tool list shows.
 
 Setup is done. Do not change it:
 - Never run `ghidraRun` or open the Ghidra GUI.
 - Do not set `GHIDRA_INSTALL_DIR` or `JAVA_HOME`. REA's MCP config provides them.
-- If REA reports Ghidra or Java not found: stop and tell the user.
-- Do not touch `~/Library/ghidra/ghidra_12.1.4_PUBLIC`,
-  `/private/tmp/ghidra_12.1.4.zip`, or `/private/tmp/ghidra-12.1.4.rb`.
+- If REA reports that Ghidra or Java was not found: stop and tell the user.
+- Do not touch `~/Library/ghidra/`, or Ghidra installers in `/private/tmp`.
 
 Workflow:
-1. `open_binary` with `path` = absolute path of the arm64 slice. The
-   parameter is `path`, not `input_path`. Never pass the universal `<exe>`.
-   Auto-analysis can take several minutes. Wait for it.
-2. `binary_overview` at most once per session, and it is optional. If it
-   times out or turns into a background task, do not call it again and do not
-   guess its result: continue with `search_procedures`, `search_strings` and
-   `procedure_pseudo_code`.
-3. Never pull a full list into context. Use `search_procedures` or
-   `search_strings` with a pattern, or page through `inspect_analysis_view`
-   in small pages. `detail: summary` returns counts only;
-   `detail: complete` returns values. Save useful results to `analysis/out/`.
-4. `procedure_pseudo_code` with a name or address.
-5. `xrefs` only with an explicit address.
+1. `open_binary` with `path` = absolute path of `<slice>`. The parameter is
+   `path`, not `input_path`. Never pass a universal binary. Auto-analysis can
+   take many minutes. Wait for it.
+2. `binary_overview` at most once per session (optional). If it times out or
+   turns into a background task, do not call it again and do not guess its result.
+3. Never pull a full list into context. Use `search_procedures` / `search_strings`
+   with a pattern, or page through `inspect_analysis_view` in small pages.
+   `detail: summary` returns counts only; `detail: complete` returns values.
+   Save useful results to `analysis/out/`.
+4. `procedure_pseudo_code` with a name or address. `xrefs` only with an explicit address.
+5. Rename functions you have understood (`set_address_name`) so later sessions benefit.
 6. `close_binary` when finished.
 
 Errors:
 - `target_unavailable: No app is open`: run `open_binary`, then retry once.
-- `main` or `_start` not found: normal. A plugin is a bundle loaded by a
-  host and has no `main`. Start from `_GetPluginFactory`.
-- Universal binary rejected: you passed `<exe>`. Use the slice.
-- Anything else: record the exact error text in `LOG.md` and classify it
-  as install/discovery, import, architecture limitation, or unsupported
-  option. One failed call does not mean a tool is unavailable.
+- `main` or `_start` not found: normal for a plugin. Start from the factory export.
+- Universal binary rejected: use the slice.
+- Anything else: record the exact error text in `LOG.md`, classified as
+  install/discovery, import, architecture limitation, or unsupported option.
 
-Process check (no GUI):
-- `ps -Ao pid,lstart,command | grep -i '[g]hidra'`
-- `-Djava.awt.headless=true` is REA's worker. Leave it alone.
-- `ghidra.GhidraRun` is a GUI. Stop it only with the user's approval.
-- Install check: `rea doctor`, `ls /opt/homebrew/opt/ghidra`, `brew info ghidra`.
+Process check (no GUI): `ps -Ao pid,lstart,command | grep -i '[g]hidra'`.
+`-Djava.awt.headless=true` is REA's worker: leave it alone. `ghidra.GhidraRun`
+is a GUI: stop it only with the user's approval.
 
 ## Audio renders
 
-You can render audio through the plugin yourself, offline, with no DAW. The
-tools are ready; do not rewrite them. Run them from the project root with the
-project venv:
+Run the tools from the project root with the project venv:
 
 ```
 .venv/bin/python analysis/tools/render.py  ...
 .venv/bin/python analysis/tools/analyze.py ...
 ```
 
-Never run them with `python3`, `/usr/bin/python3` or Xcode's Python: the PACE
-protection crashes Apple's Python on load and the user gets a crash dialog.
-The tools refuse to start there. If `.venv` is broken (for example after a
-Homebrew Python upgrade), stop and ask the user. Do not reinstall it yourself.
+Never use `python3`, `/usr/bin/python3` or Xcode's Python: copy-protected
+plugins (PACE) crash Apple-signed Python on load, and the user gets a crash
+dialog. The tools refuse to start there. If `.venv` is broken (for example after
+a Homebrew Python upgrade), stop and ask the user. Do not reinstall it yourself.
+Do not rewrite the tools. Small fixes are allowed: describe them in `LOG.md`.
+
+`--plugin` defaults to the `PLUGIN=` line. Pass it only for the clone or a sibling format.
 
 ### render.py
 
 ```
 render.py params                                   # list parameters and valid values
-render.py render [signal options] [settings]       # render, writes WAV + JSON sidecar
+render.py render [signal options] [settings]       # render; writes WAV + JSON sidecar
 render.py signal --signal sine --out FILE.wav      # write a test signal only
 ```
 
 Settings:
-- `--program "Room A"`: set first, because a program changes other parameters (F-004).
-- `--set NAME=VALUE`, repeatable. VALUE can be a display value (`"Room A"`, `on`,
-  `off`), a number with or without unit (`540`, `3.0s`, `6.6kHz`; the nearest valid
-  value is used), or `raw:0.25` (normalised 0..1).
-- `--vary NAME=V1,V2,V3` or `--vary program=all`: one render per value.
-  Several `--vary` flags render every combination.
+- `--set NAME=VALUE`, repeatable. VALUE can be a display value (`on`, `"Room A"`),
+  a number with or without a unit (`720`, `4.8kHz`; the nearest valid value is
+  used), or `raw:0.25` (normalised 0..1).
+- `--vary NAME=V1,V2,V3` (or `NAME=all` for up to 128 values): one render per
+  value. Several `--vary` flags render every combination.
+- `--program NAME`. Parameters named like program/preset/bank/patch are always applied first.
 
 Signal options: `--signal impulse|sine|noise|sweep|burst|silence|file:PATH`,
 `--sr 48000` (or a list `44100,48000,96000`), `--level -6` (dBFS), `--dur 2`,
 `--freq 1000`, `--tail 8`, `--preroll 0.05`, `--inject both|L|R`.
-Other: `--plugin PATH` (default: the VST3 above; accepts any `.vst3`/`.component`,
-including your own C++ build), `--name BASE`, `--block 512`, `--save-input`.
+Other: `--plugin PATH`, `--plugin-name`, `--name BASE`, `--block 512`, `--save-input`,
+`--settle auto|0|SECONDS` (auto waits until the output is stable; plugins that
+load data in the background output silence until then).
 
 Output: `analysis/audio/renders/<name>.wav` (float32) and `<name>.json`. The
-sidecar lists the requested values, the **applied** values as read back from the
-plugin, `changed_from_default`, every parameter's final value, the plugin's
-SHA-256, and `signal.impulse_index`. The tool prints one line per render.
-Check `applied` there: if it differs from what you meant, fix the value. Each
-render uses a fresh plugin instance.
+sidecar lists the requested values, the **applied** values as read back from
+the plugin, `changed_from_default`, every parameter's final value, the plugin's
+SHA-256, `signal.impulse_index` and `settle`. One line per render:
+
+```
+analysis/audio/renders/<name>.wav  peak -34.0 dBFS  settled 2.2s  applied {...}
+```
+
+`SILENT` or `WARNING: plugin did not settle` means the render is invalid:
+record it in `LOG.md` and do not analyse it. If `applied` differs from what you
+meant, fix the value.
 
 ### analyze.py
 
@@ -190,68 +329,23 @@ All times are relative to the signal start (from the sidecar), in ms and samples
 |---|---|
 | `info FILE` | length, peak, RMS, settings |
 | `ir FILE [--plot]` | first arrival, peak, EDT/T20/T30 broadband and per octave, band levels, echo density, L/R correlation |
-| `peaks FILE [--end-ms 120] [--n 25]` | strongest discrete early arrivals: candidate delay-tap times |
+| `peaks FILE [--end-ms 120] [--n 25]` | strongest discrete early arrivals |
 | `mod FILE [--plot]` | FM/AM rate and depth of a rendered sine |
 | `compare A B` | alignment lag, null test, level difference, per-band T30 table |
 | `spectrogram FILE` | PNG spectrogram |
 
-Full results are saved to `analysis/out/<name>.<kind>.json` (and `.png`).
-Quote these paths as evidence. Do not open PNGs unless you can view images.
+Results are saved to `analysis/out/<name>.<kind>.json` (and `.png`). Quote
+these paths as evidence. If you need a measurement that analyze.py lacks (THD,
+transfer curve, frequency response from a sweep), write a small script in
+`analysis/tools/` and record it in `LOG.md`.
 
 ### Test rules
 
-- Deterministic mode: `--set depth=0 --set mode_enh=off` makes renders
-  bit-identical (F-002). Use it for delay times, structure and null tests.
-  With modulation on, compare statistics (T30, levels), never sample values.
-- Use `--set mix=100`. `wet_solo` is On by default (see F-005).
-- Change one parameter per test. Keep everything else identical, including the program.
-- Delays that scale with sample rate keep their time in ms across 44.1/48/96 kHz;
-  delays fixed in samples keep their sample count. Use `--sr 44100,48000,96000`,
-  then `peaks` on each file.
-- Check repeatability before you trust a difference: render the same settings
-  twice and `compare` the two files.
-
-Example recipes:
-
-```
-# impulse response of every program, deterministic
-render.py render --vary program=all --set mix=100 --set depth=0 --set mode_enh=off
-# which delays scale with sample rate
-render.py render --program "Room A" --set mix=100 --set depth=0 --set mode_enh=off --sr 44100,48000,96000
-analyze.py peaks analysis/audio/renders/<file>.wav --end-ms 100
-# what a decay knob does per band
-render.py render --program "Room A" --set mix=100 --vary bass=0.6,1.8,4.5,9
-analyze.py ir analysis/audio/renders/<file>.wav
-# modulation: long sine, compare depth settings
-render.py render --signal sine --freq 1000 --dur 10 --tail 1 --set mix=100 --vary depth=0,23,71
-analyze.py mod analysis/audio/renders/<file>.wav
-```
-
-Later, to compare your C++ implementation: render it with `--plugin <your build>`,
-the same signal and settings, then run `analyze.py compare plugin.wav yours.wav`.
-
-## Analysis priorities
-
-Do one step at a time. Write its notes before you start the next one. Combine
-static analysis with renders: a constant found in the code becomes Confirmed
-when a render shows the matching behaviour.
-
-1. **Architecture map.** Start at `_GetPluginFactory`. Find the processor and
-   controller classes it creates. Search strings for C++ RTTI type names,
-   `Steinberg` and `juce`. The VST3 layer may be JUCE wrapping a UA framework
-   shared with AU/AAX; follow it inward to the DSP classes.
-2. **Parameter flow.** The 26 host parameters are already listed (F-007,
-   `analysis/out/params_uaudio-lexicon-224.json`). For each: find where the
-   processor reads it and what it changes. Map ID → name → range → reader →
-   effect. Test each effect with `--vary`.
-3. **Audio path.** Find where the sample rate and block size arrive, where delay
-   lines are allocated (sizes reveal delay lengths and how they scale with
-   sample rate), and the per-sample loop: filters, modulation, feedback.
-4. **Algorithm structure.** Build a signal-flow description from code, constants
-   and render measurements. Every inference stays a Hypothesis until a render
-   checks it.
-5. **Variants and programs.** How the 9 programs differ: tables in the code,
-   compared with `--vary program=all` renders.
+- Compare statistics (T30, band levels, arrival times), not sample values,
+  unless the plugin is in deterministic mode.
+- Change one parameter per test. Keep everything else identical.
+- Keep the wet/dry mix at 100% wet unless you are testing the mix.
+- Name the program or preset used in every finding.
 
 ## Evidence standards
 
@@ -260,37 +354,37 @@ Every finding is exactly one of:
 - **Hypothesis**: plausible, not yet verified.
 - **Unknown**: not enough evidence.
 
-Each finding records: function name; address (Ghidra address in the arm64
-slice) or render command; the evidence ID or saved output path; the relevant
-strings, constants, or xrefs; and how to confirm it.
+Each finding records: function name; address (Ghidra address in `<slice>`) or
+render command; the evidence path; the relevant strings, constants or xrefs;
+and how to confirm it. A constant found in code becomes Confirmed when a render
+shows the matching behaviour.
 
-- One suggestive string is not evidence of a language, framework, DSP
-  algorithm, or source availability.
+- One suggestive string is not evidence of a language, framework or algorithm.
+- Vendor marketing and descriptions of the original hardware are not evidence
+  about this binary. Keep them as Hypothesis.
 - Decompiled code is an approximation, not original source.
-- Keep each extracted constant separate from what you think it means.
-  Record the raw hex and the decoded value. Decode with a command, not in
-  your head:
+- Keep each extracted constant separate from what you think it means. Record
+  the raw hex and the decoded value, and decode with a command:
   `python3 -c "import struct; print(struct.unpack('>f', bytes.fromhex('3f800000'))[0])"`
-  prints 1.0. For a double, use `'>d'` and 16 hex digits. (This one-liner does
-  not load the plugin, so plain `python3` is fine here.)
+  (`'>d'` and 16 hex digits for a double; this one-liner does not load the
+  plugin, so plain `python3` is fine).
 
-Example `FINDINGS.md` entry:
+Example:
 
 ```
-### F-012 One-pole filter on reverb input (Hypothesis)
-- Where: FUN_0001a2c4, arm64 slice (SHA-256 in TARGET.md)
-- Evidence: procedure_pseudo_code -> analysis/out/FUN_0001a2c4.c, lines 40-58
+### F-012 One-pole low-pass in the feedback path (Hypothesis)
+- Where: FUN_0001a2c4, <slice> (SHA-256 in TARGET.md)
+- Evidence: procedure_pseudo_code -> analysis/out/FUN_0001a2c4.notes.md
 - Constant (extracted): 0x3f7b7e91 = 0.9824
-- Meaning (inferred): feedback coefficient of a one-pole filter.
-  If a = exp(-2*pi*fc/fs) at 48 kHz, fc is about 136 Hz. Sample rate not confirmed.
-- To confirm: render impulses at 44.1/48/96 kHz in deterministic mode;
-  compare the low-band level and T30 from analyze.py ir.
+- Meaning (inferred): a = exp(-2*pi*fc/fs); at 48 kHz, fc is about 136 Hz.
+- To confirm: --vary <damping param> with --sr 44100,48000,96000; compare band levels.
 ```
 
 ## Report at the end of each step
 
 In `LOG.md` and in your reply:
-- the tool calls and renders you made, with evidence IDs or output paths
+- the tool calls and renders you ran, with evidence paths
 - new Confirmed / Hypothesis / Unknown items, by FINDINGS ID
+- `COVERAGE.md` progress (rows measured / specified / implemented / passing)
 - what is still open
-- the Next step
+- the **Next step**

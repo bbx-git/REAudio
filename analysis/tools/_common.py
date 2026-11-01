@@ -10,7 +10,19 @@ import re
 import sys
 
 PROJECT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DEFAULT_PLUGIN = "/Library/Audio/Plug-Ins/VST3/uaudio_lexicon_224.vst3"
+
+
+def _plugin_from_claude_md():
+    """The target plugin is the single `PLUGIN=<path>` line in CLAUDE.md."""
+    try:
+        with open(os.path.join(PROJECT, "CLAUDE.md")) as f:
+            m = re.search(r"^PLUGIN=(.+?)\s*$", f.read(), re.M)
+        return m.group(1).strip().strip('"') if m else None
+    except OSError:
+        return None
+
+
+DEFAULT_PLUGIN = _plugin_from_claude_md()
 RENDER_DIR = os.path.join(PROJECT, "analysis", "audio", "renders")
 OUT_DIR = os.path.join(PROJECT, "analysis", "out")
 

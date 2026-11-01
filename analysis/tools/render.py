@@ -4,9 +4,9 @@
 Run with the project venv (never /usr/bin/python3, see _common.py):
 
     .venv/bin/python analysis/tools/render.py params
-    .venv/bin/python analysis/tools/render.py render --signal impulse --set mix=100
+    .venv/bin/python analysis/tools/render.py render --signal impulse --set decay_time_seconds=3
     .venv/bin/python analysis/tools/render.py render --signal impulse --sr 44100,48000,96000
-    .venv/bin/python analysis/tools/render.py render --signal impulse --vary program=all
+    .venv/bin/python analysis/tools/render.py render --signal impulse --vary decay_time_seconds=1,2,5
     .venv/bin/python analysis/tools/render.py signal --signal sine --freq 440 --out x.wav
 
 Every render writes:
@@ -36,6 +36,52 @@ import soundfile as sf  # noqa: E402
 
 PLUGIN_LOG = os.path.join(PROJECT, "analysis", "out", "plugin_stdout.log")
 HIDDEN_PREFIXES = ("midi_cc_",)
+# Parameters that load a preset/program/bank and may overwrite others: applied first.
+_PRESET_RE = re.compile(r"(^|_)(program|preset|bank|patch)(_|$)", re.I)
+
+
+def is_preset_param(name):
+    return bool(_PRESET_RE.search(name))
+
+
+def settle(plugin, sr, block, mode):
+    """Wait until the plugin produces stable output for a probe impulse.
+
+    Some plugins load their DSP data (impulse responses, tables) on a background
+    thread after instantiation or a preset change, and output silence until it
+    is ready. Offline processing does not advance that work; only wall-clock
+    time does. 'auto' renders a 1 s probe impulse every 0.5 s until two
+    consecutive probes are non-silent and within 0.2 dB of each other.
+    """
+    if str(mode) in ("0", "0.0", "off", "none"):
+        return {"mode": "off", "waited_s": 0.0}
+    t_start = time.time()
+    probe = np.zeros((2, sr), np.float32)
+    probe[:, int(0.01 * sr)] = 0.5
+    if str(mode) != "auto":
+        # Loading starts on the first audio call (prepare), so process once, then wait.
+        with quiet_fds():
+            plugin.process(probe, float(sr), buffer_size=block, reset=True)
+        time.sleep(float(mode))
+        return {"mode": "fixed", "waited_s": round(time.time() - t_start, 2)}
+    prev, stable, n = None, 0, 0
+    while time.time() - t_start < 30.0:
+        with quiet_fds():
+            y = plugin.process(probe, float(sr), buffer_size=block, reset=True)
+        n += 1
+        e = float(np.sum(np.asarray(y, np.float64) ** 2))
+        if e > 0 and prev is not None and prev > 0 and abs(10 * np.log10(e / prev)) < 0.2:
+            stable += 1
+            if stable >= 2:
+                return {"mode": "auto", "ready": True, "probes": n,
+                        "waited_s": round(time.time() - t_start, 2)}
+        else:
+            stable = 0
+        prev = e
+        time.sleep(0.5)
+    reason = "silent for 30 s" if not prev else "output still changing after 30 s"
+    return {"mode": "auto", "ready": False, "probes": n, "reason": reason,
+            "waited_s": round(time.time() - t_start, 2)}
 
 
 # --------------------------------------------------------------------------
@@ -214,6 +260,7 @@ def make_signal(a, sr):
 # Commands
 # --------------------------------------------------------------------------
 def cmd_params(a):
+    _need_plugin(a)
     plugin = load(a.plugin, a.plugin_name)
     rows, full = [], {}
     for name, p in visible_params(plugin).items():
@@ -261,7 +308,7 @@ def _expand_vary(plugin_path, plugin_name, vary):
             if name not in probe.parameters:
                 sys.exit("ERROR: unknown parameter %r" % name)
             valid = list(probe.parameters[name].valid_values or [])
-            if not valid or len(valid) > 64:
+            if not valid or len(valid) > 128:
                 sys.exit("ERROR: %s has %d values; list them explicitly" % (name, len(valid)))
             vals = [str(v).strip() for v in valid]
         else:
@@ -271,6 +318,7 @@ def _expand_vary(plugin_path, plugin_name, vary):
 
 
 def cmd_render(a):
+    _need_plugin(a)
     exe = plugin_executable(a.plugin)
     exe_hash = sha256(exe) if exe else None
     import pedalboard
@@ -292,18 +340,21 @@ def cmd_render(a):
     for sr in a.sr:
         for combo in combos:
             settings = list(sets)
-            # a varied 'program' must be applied before other settings
+            # varied preset parameters must be applied before other settings
             for n, v in zip(names, combo):
-                if n == "program":
-                    settings = [(n, v)] + [s for s in settings if s[0] != "program"]
+                settings = [s for s in settings if s[0] != n]
+                if is_preset_param(n):
+                    settings = [(n, v)] + settings
                 else:
-                    settings = [s for s in settings if s[0] != n] + [(n, v)]
+                    settings = settings + [(n, v)]
+            settings.sort(key=lambda s: not is_preset_param(s[0]))  # stable: presets first
 
             plugin = load(a.plugin, a.plugin_name)
             defaults = param_state(plugin)
             applied = {}
             for k, v in settings:
                 applied[k] = set_param(plugin, k, v)
+            settle_info = settle(plugin, sr, a.block, a.settle)
             state = param_state(plugin)
 
             x, info = make_signal(a, sr)
@@ -346,11 +397,20 @@ def cmd_render(a):
                 "all_params": state,
                 "peak_dbfs": 20 * np.log10(peak) if peak > 0 else None,
                 "render_seconds": round(elapsed, 3),
+                "settle": settle_info,
             }
             write_json(os.path.join(a.outdir, name + ".json"), side)
             pk = "%.1f dBFS" % side["peak_dbfs"] if peak > 0 else "SILENT"
             warn = "  WARNING: output above 0 dBFS" if peak > 1.0 else ""
-            print("%s  peak %s  applied %s%s" % (rel(wav), pk, applied or "{}", warn))
+            if not settle_info.get("ready", True):
+                warn += "  WARNING: plugin did not settle (%s)" % settle_info.get("reason")
+            print("%s  peak %s  settled %.1fs  applied %s%s"
+                  % (rel(wav), pk, settle_info.get("waited_s", 0.0), applied or "{}", warn))
+
+
+def _need_plugin(a):
+    if not a.plugin:
+        sys.exit("ERROR: no plugin. Set the PLUGIN=<path> line in CLAUDE.md or pass --plugin.")
 
 
 def main():
@@ -388,6 +448,9 @@ def main():
     p.add_argument("--vary", action="append", metavar="NAME=V1,V2|all",
                    help="render once per value (repeatable: all combinations)")
     p.add_argument("--block", type=int, default=512, help="host block size (default 512)")
+    p.add_argument("--settle", default="auto",
+                   help="wait before rendering: auto (probe until output is stable, max 30 s), "
+                        "a number of seconds, or 0 (default auto)")
     p.add_argument("--name", help="output base name (default: built from the settings)")
     p.add_argument("--outdir", default=RENDER_DIR, help="default analysis/audio/renders")
     p.add_argument("--save-input", action="store_true", help="also write the input signal")
