@@ -66,12 +66,3 @@ Each script also takes `--help`.
 
 To compare your own implementation, render it with `--plugin <path to your .vst3>`
 using the same settings, then run `analyze.py compare plugin.wav yours.wav`.
-
-## Ground rules
-
-- The installed plugin and its content files are never modified, patched,
-  re-signed or decrypted.
-- No licence or copy-protection bypass. Protected plugins get static analysis and renders
-  only (no debuggers or Frida). The clone can be debugged freely.
-- Check the vendor's licence terms before publishing or shipping anything derived
-  from this work.

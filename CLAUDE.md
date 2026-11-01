@@ -38,7 +38,7 @@ Everything you write goes under `analysis/` or `clone/`. Do not use /tmp.
 
 | Path | Contents |
 |---|---|
-| `analysis/TARGET.md` | Bundle path, exe path, version, SHA-256 of `<exe>` and `<slice>`, architectures, protection status, REA status |
+| `analysis/TARGET.md` | Bundle path, exe path, version, SHA-256 of `<exe>` and `<slice>`, architectures, REA status |
 | `analysis/FINDINGS.md` | Numbered findings (F-001, ...): Confirmed / Hypothesis / Unknown |
 | `analysis/COVERAGE.md` | One row per host parameter: measured / static / in spec / in clone / passes A/B |
 | `analysis/SPEC.md` | Behavioural spec for the clone (Phase C) |
@@ -77,19 +77,11 @@ At the end of each step: update `FINDINGS.md` and `COVERAGE.md`, and append to `
   SDK), edit any config (opencode, REA, shell, system, the plugin's own settings
   files), delete files outside `analysis/` and `clone/`, kill a process, or
   analyse files outside the target's bundles.
-- No licence bypass, ever. Do not investigate licensing, activation, or
-  copy-protection code, and do not decrypt, unpack or reverse encrypted
-  content or preset files. Measure their effect through renders.
-- **Protected targets.** Phase 0 records whether the plugin uses copy protection
-  or anti-tamper (PACE/iLok: `__Pace_Eden`, `libpacefusion`, DTCompiler
-  `com.paceap...`, licensing exports such as `_g_dwIL*`; or others). If it does:
-  - Never attach a debugger, Frida, gdb, lldb, rizin-debug or DTrace to the
-    plugin or to any process that loaded it. Static analysis and renders only.
-  - Protected or obfuscated code regions: record the address in `LOG.md` and move on.
-- **Unprotected targets.** Still no patching. Ask the user once before the first
-  dynamic session on the original plugin, and record the approval in `LOG.md`.
-- **Your own clone has no limits.** Debug it with lldb, sanitizers, logging,
-  probes, unit tests, or any instrumentation you need.
+- Methods on the original: static analysis (REA) and offline renders.
+  Licensing code, encrypted or obfuscated regions, and encrypted content files
+  hold no DSP. Note their address in `LOG.md`, skip them, and measure the
+  content's effect through renders.
+- Debug the clone with anything: lldb, sanitizers, logging, probes, unit tests.
 - Never repeat a failing command or tool call unchanged. If two different
   approaches fail on the same problem, stop and report.
 
@@ -112,7 +104,6 @@ quoted paths.
 | Exported symbols | `nm -arch arm64 -gU "<exe>"` (count first: `\| wc -l`) |
 | Framework hints | `strings -a "<exe>" \| grep -m 20 -iE "juce\|steinberg\|iplug\|dpf"` |
 | Signature (read-only) | `codesign -dv --verbose=2 "<bundle>" 2>&1` |
-| Protection | from the above: PACE/iLok markers, few exports, encrypted resources. Record Yes/No and the evidence |
 | Make the slice | `lipo -thin arm64 "<exe>" -output "<slice>"` (if the exe is already arm64-only, `cp` it) |
 | Slice hash | `shasum -a 256 "<slice>"` |
 | Parameters | `.venv/bin/python analysis/tools/render.py params` -> creates the rows of `COVERAGE.md` |
@@ -126,7 +117,7 @@ Prefer otool, LLVM objdump, or REA.
 
 ## Phase A: Black-box measurement (renders)
 
-For a protected plugin, renders carry most of the work. Be systematic.
+Renders carry most of the work. Be systematic.
 
 1. **Baseline.** Render the defaults twice and `compare` them. This is the noise
    floor: how much two identical renders differ. Every effect you report must be
@@ -277,8 +268,8 @@ Run the tools from the project root with the project venv:
 .venv/bin/python analysis/tools/analyze.py ...
 ```
 
-Never use `python3`, `/usr/bin/python3` or Xcode's Python: copy-protected
-plugins (PACE) crash Apple-signed Python on load, and the user gets a crash
+Never use `python3`, `/usr/bin/python3` or Xcode's Python: some plugins
+(PACE-built) crash Apple-signed Python on load, and the user gets a crash
 dialog. The tools refuse to start there. If `.venv` is broken (for example after
 a Homebrew Python upgrade), stop and ask the user. Do not reinstall it yourself.
 Do not rewrite the tools. Small fixes are allowed: describe them in `LOG.md`.
