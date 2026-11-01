@@ -1,0 +1,133 @@
+# ===== macOS =====
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Trashes
+.fseventsd
+
+# ===== Editors / IDEs =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== Secrets and local config =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+
+# ===== Reverse-engineering: extracted and generated artifacts =====
+# Extracted/thinned Mach-O slices, copies of installed plugins, and binaries
+analysis/slices/
+analysis/verify/
+analysis/tmp/
+*.vst3
+*.vst
+*.component
+*.dylib
+*.so
+*.a
+*.o
+*.dSYM/
+*.app/Contents/MacOS/*
+*.exe
+*.dll
+*.elf
+*.bin
+*.dmg
+*.pkg
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# REA / Ghidra / Hopper / IDA outputs
+analysis/evidence/
+*.snapshot
+*.rep/
+*.gpr
+*.idb
+*.i64
+*.til
+*.nam
+*.id0
+*.id1
+*.id2
+*.hop
+*.rzdb
+*.gdb-session
+ghidra_project/
+ghidra-temp/
+
+# Decompiler / disassembler text dumps (large, regenerable)
+*.decompiled.c
+*.decompiled.txt
+*_disasm.txt
+*_pseudo.c
+*_strings.txt
+*_xrefs.txt
+*_procedures.json
+
+# ===== Audio: renders and captures (large, regenerable) =====
+*.wav
+*.aif
+*.aiff
+*.flac
+*.mp3
+*.m4a
+*.caf
+renders/
+captures/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ===== C / C++ builds (for the independent implementation) =====
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.bak
+*.obj
+*.lib
+
+# ===== Xcode =====
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.xcuserdatad/
+
+# ===== Node (if any JS tooling is used) =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ===== Logs and temp =====
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
